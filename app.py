@@ -20,7 +20,7 @@ def get_driver():
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument(f"--window-size={random.randint(1200, 1600)},{random.randint(800, 1000)}")
+    chrome_options.add_argument(f"--window-size=1920,1080")
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     
@@ -46,56 +46,66 @@ def scrape_store_search(base_url):
         logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
         log_placeholder.code("\n".join(logs[-10:]))
 
-    # --- 關鍵：建構店家搜尋網址 ---
-    # 如果網址已經有參數，用 &p=，否則用 ?p=
+    # --- 修正搜尋 URL 建構邏輯 ---
     search_query = "吹嘴"
-    if "?" in base_url:
-        target_url = f"{base_url.rstrip('/')}&p={search_query}"
-    else:
-        target_url = f"{base_url.rstrip('/')}/search/auction/product?p={search_query}"
+    # 清理網址，確保路徑正確
+    base_url = base_url.split('?')[0].rstrip('/')
+    # Yahoo 店內搜尋的標準格式
+    target_url = f"{base_url}/search/auction/product?p={search_query}"
 
     try:
         driver = get_driver()
-        log(f"🕵️ 進入店家網址並過濾「{search_query}」...")
+        log(f"🕵️ 正在潛入店家搜尋頁面: {target_url}")
         driver.get(target_url)
-        time.sleep(random.uniform(5, 8))
         
-        # 滾動加載
-        driver.execute_script("window.scrollTo(0, 1000);")
-        time.sleep(2)
+        # 增加等待時間，確保店家頁面的動態組件載入
+        time.sleep(10)
+        
+        # 執行多次微幅滾動，觸發 Lazy Load
+        for _ in range(3):
+            driver.execute_script("window.scrollBy(0, 500);")
+            time.sleep(1)
 
-        log(f"📄 店家頁面標題: {driver.title}")
+        log(f"📄 標題確認: {driver.title}")
         
-        # 獲取商品元素 (Yahoo 店家頁面結構)
-        # 嘗試多種店家常用的商品容器
-        elements = driver.find_elements(By.CSS_SELECTOR, 'li[data-item-id], div[class*="BaseItem"], .item-container')
+        # --- 針對店家頁面 (Booth) 的多重探針 ---
+        # 1. 嘗試抓取所有商品卡片
+        items = driver.find_elements(By.CSS_SELECTOR, 'div[class*="Item__itemContainer"], .item-container, li[data-item-id]')
         
+        # 2. 如果沒抓到，嘗試更廣泛的 A 標籤 (商品連結)
+        if not items:
+            log("⚠️ 標籤探針失效，嘗試深度遍歷商品節點...")
+            items = driver.find_elements(By.XPATH, "//div[contains(@class, 'ProductCard')] | //div[contains(@class, 'BaseItem')]")
+
+        log(f"📦 偵測到 {len(items)} 個商品區塊")
+
         brand_list = ["Selmer", "Vandoren", "Yanagisawa", "Meyer", "Yamaha", "Otto Link", "Beechler", "JodyJazz"]
         
-        for el in elements:
+        for item in items:
             try:
-                # 抓取標題與價格
-                text = el.text.strip().replace("\n", " ")
-                if "$" not in text: continue
+                raw_text = item.text.replace("\n", " ").strip()
+                if "$" not in raw_text: continue
                 
-                # 抓取連結
-                link_el = el.find_element(By.TAG_NAME, "a")
-                link = link_el.get_attribute("href")
+                # 提取標題與價格
+                # 店家頁面通常標題在 a 標籤內
+                try:
+                    title_el = item.find_element(By.CSS_SELECTOR, 'span[class*="ItemName"], a[class*="ItemName"]')
+                    title = title_el.text
+                    link = title_el.find_element(By.XPATH, "./ancestor::a").get_attribute("href")
+                except:
+                    title = raw_text[:60]
+                    link = target_url # 保底
                 
-                # 價格正則
-                p_match = re.search(r'\$\s*[0-9,]+', text)
+                p_match = re.search(r'\$\s*[0-9,]+', raw_text)
                 price = p_match.group() if p_match else "N/A"
                 
-                title = text[:80].strip()
-                
-                # 品牌識別
+                # 品牌與樂器判定
                 brand = "其他"
                 for b in brand_list:
                     if b.lower() in title.lower():
                         brand = b
                         break
                 
-                # 樂器判定
                 instrument = "其他"
                 if "alto" in title.lower() or "中音" in title.lower(): instrument = "中音Alto"
                 elif "tenor" in title.lower() or "次中音" in title.lower(): instrument = "次中音Tenor"
@@ -109,33 +119,30 @@ def scrape_store_search(base_url):
                 })
             except: continue
 
-        df = pd.DataFrame(all_items).drop_duplicates(subset=['商品資訊', '售價'])
-        log(f"✅ 成功從店家拔回 {len(df)} 筆「吹嘴」相關數據")
+        df = pd.DataFrame(all_items).drop_duplicates(subset=['商品資訊'])
+        log(f"✅ 調查完成，共拔回 {len(df)} 筆數據")
         driver.quit()
         return df
     except Exception as e:
         log(f"❌ 異常: {str(e)}")
+        if 'driver' in locals(): driver.quit()
         return pd.DataFrame()
 
-# --- 2. UI 介面 ---
-st.title("🎷 薩克斯風吹嘴：特定店家專向調查")
-st.markdown("輸入 **店家首頁網址**（例如：`https://tw.bid.yahoo.com/booth/Y12345678`），系統會自動搜尋店內的吹嘴。")
+# --- UI 介面 ---
+st.title("🎷 薩克斯風吹嘴：特定店家調查系統")
+store_url = st.text_input("請輸入店家首頁網址：", value="https://tw.bid.yahoo.com/booth/Y9133606367")
 
-# 預設一個示例店家 (唐川音樂在 Yahoo 的範例路徑結構)
-default_store = "https://tw.bid.yahoo.com/booth/Y9133606367"
-store_url = st.text_input("店家網址：", value=default_store)
-
-if st.button("🚀 開始店內搜索"):
+if st.button("🚀 執行店內定向調查"):
     if store_url:
         results = scrape_store_search(store_url)
         if not results.empty:
-            st.session_state.store_df = results
+            st.session_state.booth_df = results
             st.dataframe(results, use_container_width=True)
         else:
-            st.warning("在此店家內找不到相關商品，或 IP 遭暫時阻擋。")
+            st.error("找不到商品。請確認該店家是否有『吹嘴』關鍵字商品，或嘗試更換店家網址。")
 
-if 'store_df' in st.session_state:
+if 'booth_df' in st.session_state:
     output = BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        st.session_state.store_df.to_excel(writer, index=False)
-    st.download_button("📥 下載店家調查 Excel", output.getvalue(), "store_sax_report.xlsx")
+        st.session_state.booth_df.to_excel(writer, index=False)
+    st.download_button("📥 下載 Excel 報告", output.getvalue(), "store_report.xlsx")
