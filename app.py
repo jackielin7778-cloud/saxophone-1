@@ -95,4 +95,19 @@ def scrape_search_page(url):
 
 # --- UI 介面 ---
 st.title("🎷 薩克斯風吹嘴搜尋結果「全數拔回」工具")
-st.markdown("請在下方貼上 **Yahoo 拍賣搜尋結果頁** 的網址，系統
+st.markdown("請在下方貼上 **Yahoo 拍賣搜尋結果頁** 的網址，系統將自動解析整頁商品。")
+
+search_url = st.text_input("輸入搜尋結果網址：", placeholder="https://tw.bid.yahoo.com/search/auction/product?p=...")
+
+if st.button("🚀 開始整頁拔回"):
+    if search_url:
+        result_df = scrape_search_page(search_url)
+        if not result_df.empty:
+            st.session_state.search_results = result_df
+            st.dataframe(result_df, use_container_width=True)
+
+if 'search_results' in st.session_state:
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        st.session_state.search_results.to_excel(writer, index=False)
+    st.download_button("📥 下載全頁 Excel 報告", output.getvalue(), "yahoo_search_results.xlsx")
