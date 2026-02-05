@@ -11,26 +11,24 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from io import BytesIO
 
-st.set_page_config(page_title="🎷 吹嘴調查：雲端生存版", layout="wide")
+st.set_page_config(page_title="🎷 吹嘴調查：行動版偽裝突破", layout="wide")
 
 def get_driver():
     chrome_options = Options()
-    chrome_options.add_argument("--headless=new") # 使用最新的無頭模式，更接近真機
+    chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
     
-    # --- 核心偽裝：抹除自動化特徵 ---
-    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+    # --- 行動版偽裝：模擬 iPhone 14 ---
+    mobile_ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
+    chrome_options.add_argument(f"user-agent={mobile_ua}")
+    chrome_options.add_argument("--window-size=390,844") # iPhone 螢幕尺寸
+    
+    # 抹除自動化特徵
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     chrome_options.add_experimental_option('useAutomationExtension', False)
-    
-    # 偽裝 UA：使用一個非常具體的真實版本
-    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
-    chrome_options.add_argument(f"user-agent={ua}")
-    
-    # 設定一個較大的視窗，防止 Lazy Load 判定
-    chrome_options.add_argument("--window-size=1920,1080")
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
 
     for path in ["/usr/bin/chromium", "/usr/bin/chromium-browser"]:
         if os.path.exists(path):
@@ -39,27 +37,12 @@ def get_driver():
             
     service = Service("/usr/bin/chromedriver") if os.path.exists("/usr/bin/chromedriver") else Service()
     driver = webdriver.Chrome(service=service, options=chrome_options)
-
-    # --- JavaScript 注入：深度抹除指紋 ---
-    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-        "source": """
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => undefined
-            });
-            window.chrome = {
-                runtime: {}
-            };
-            Object.defineProperty(navigator, 'languages', {
-                get: () => ['zh-TW', 'zh']
-            });
-            Object.defineProperty(navigator, 'plugins', {
-                get: () => [1, 2, 3, 4, 5]
-            });
-        """
-    })
+    
+    # 注入行動端觸控與 WebDriver 抹除
+    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
     return driver
 
-def scrape_cloud_final_attempt(base_url):
+def scrape_mobile_attempt(base_url):
     all_items = []
     log_placeholder = st.empty()
     logs = []
@@ -68,84 +51,93 @@ def scrape_cloud_final_attempt(base_url):
         logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
         log_placeholder.code("\n".join(logs[-8:]))
 
-    # 確保搜尋路徑正確
+    # --- 關鍵：強制轉換為行動版網址 ---
+    # 範例：https://tw.bid.yahoo.com/booth/Y9133606367 -> https://tw.bid.yahoo.com/booth/Y9133606367
+    # Yahoo 的行動版有時會自動跳轉，我們手動確保路徑包含店內搜尋
     clean_url = base_url.split('?')[0].rstrip('/')
     target_url = f"{clean_url}/search/auction/product?p=吹嘴"
 
     try:
         driver = get_driver()
-        log(f"🕵️ 正在嘗試穿透 Yahoo 防火牆...")
-        
-        # 偽裝：先去 Google 再去 Yahoo (Referrer 偽裝)
-        driver.get("https://www.google.com")
-        time.sleep(2)
-        
+        log("📱 啟動 iPhone 模式潛入調查...")
         driver.get(target_url)
         
-        # 增加隨機等待，避免被發現是固定頻率
-        wait_time = random.randint(15, 25)
-        log(f"⏳ 靜候數據渲染中 ({wait_time}s)...")
+        # 增加隨機等待
+        wait_time = random.randint(15, 20)
+        log(f"⏳ 等待行動版網頁渲染 ({wait_time}s)...")
         time.sleep(wait_time)
 
-        # 暴力滾動
-        driver.execute_script("window.scrollTo(0, 800);")
-        time.sleep(2)
+        # 多次小幅滑動
+        for _ in range(3):
+            driver.execute_script("window.scrollBy(0, 400);")
+            time.sleep(2)
 
         source = driver.page_source
         log(f"📦 原始碼長度: {len(source)} 字元")
 
-        # 判定是否成功取得內容
-        if len(source) < 50000:
-            log("⚠️ 警告：內容長度異常，可能仍被阻擋。")
+        # 行動版網頁通常使用 [class*="ProductItem"] 或 [data-testid]
+        # 使用廣域探針尋找包含價格的商品塊
+        containers = driver.find_elements(By.XPATH, "//li | //div[contains(@class, 'Item')] | //div[contains(@class, 'Product')]")
         
-        # 尋找所有商品容器
-        # 店家搜尋結果頁面的商品通常在 div.GridItem__gridItem___ 或類似標籤
-        containers = driver.find_elements(By.CSS_SELECTOR, 'div[class*="Item__itemContainer"], li[data-item-id], [class*="BaseItem"]')
-        
-        log(f"🔍 找到 {len(containers)} 個商品塊")
+        log(f"🔍 偵測到 {len(containers)} 個潛在商品區塊")
 
         brand_list = ["Selmer", "Vandoren", "Yanagisawa", "Meyer", "Yamaha", "Otto Link", "Beechler", "JodyJazz"]
 
         for el in containers:
             try:
-                title = el.find_element(By.CSS_SELECTOR, '[class*="ItemName"]').text
-                price = el.find_element(By.CSS_SELECTOR, '[class*="ItemPrice"]').text
-                
-                brand = "其他"
-                for b in brand_list:
-                    if b.lower() in title.lower():
-                        brand = b
-                        break
-                
-                all_items.append({
-                    "品牌": brand,
-                    "商品資訊": title,
-                    "售價": price,
-                    "網址": target_url
-                })
+                txt = el.text.replace("\n", " ").strip()
+                if "$" in txt and len(txt) > 10:
+                    # 抓取標題 (嘗試尋找 A 標籤或直接取前 50 字)
+                    try:
+                        title = el.find_element(By.XPATH, ".//a").get_attribute("title") or el.text.split("$")[0].strip()
+                    except:
+                        title = txt.split("$")[0].strip()
+                    
+                    if len(title) < 4: continue
+
+                    # 抓取價格
+                    p_match = re.search(r'\$\s*[0-9,]+', txt)
+                    price = p_match.group() if p_match else "N/A"
+                    
+                    brand = "其他"
+                    for b in brand_list:
+                        if b.lower() in title.lower():
+                            brand = b
+                            break
+                    
+                    all_items.append({
+                        "品牌": brand,
+                        "商品資訊": title,
+                        "售價": price,
+                        "網址": target_url
+                    })
             except: continue
 
         df = pd.DataFrame(all_items).drop_duplicates(subset=['商品資訊'])
         log(f"✅ 成功提取 {len(df)} 筆數據")
         driver.quit()
         return df
+        
     except Exception as e:
-        log(f"❌ 異常: {str(e)}")
+        log(f"❌ 嚴重異常: {str(e)}")
         if 'driver' in locals(): driver.quit()
         return pd.DataFrame()
 
-# UI 介面
-st.title("🎷 吹嘴調查：雲端生存版")
-store_url = st.text_input("店家網址：", value="https://tw.bid.yahoo.com/booth/Y9133606367")
+# --- UI 介面 ---
+st.title("🎷 吹嘴調查：行動版偽裝系統")
+st.info("💡 透過模擬 iPhone 行動版網頁，嘗試避開桌機版的 IP 封鎖。")
 
-if st.button("🚀 啟動調查"):
-    results = scrape_cloud_final_attempt(store_url)
-    if not results.empty:
-        st.dataframe(results, use_container_width=True)
-        # 提供下載
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            results.to_excel(writer, index=False)
-        st.download_button("📥 下載報告", output.getvalue(), "sax_report.xlsx")
-    else:
-        st.error("目前雲端 IP 遭 Yahoo 封鎖，請稍候再試。")
+default_store = "https://tw.bid.yahoo.com/booth/Y9133606367"
+store_url = st.text_input("店家網址：", value=default_store)
+
+if st.button("🚀 啟動行動版偽裝掃描"):
+    if store_url:
+        results = scrape_mobile_attempt(store_url)
+        if not results.empty:
+            st.dataframe(results, use_container_width=True)
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                results.to_excel(writer, index=False)
+            st.download_button("📥 下載報告", output.getvalue(), "mobile_sax_report.xlsx")
+        else:
+            st.error("掃描失敗。這代表 Yahoo 已對該伺服器 IP 進行全站屏蔽。")
