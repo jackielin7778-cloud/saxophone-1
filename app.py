@@ -12,7 +12,7 @@ from selenium.webdriver.common.by import By
 from io import BytesIO
 
 # --- 1. 頁面配置 ---
-st.set_page_config(page_title="🎷 薩克斯風吹嘴搜尋拔回 (預設網址版)", layout="wide")
+st.set_page_config(page_title="🎷 薩克斯風吹嘴：店家專向調查", layout="wide")
 
 def get_driver():
     chrome_options = Options()
@@ -20,11 +20,8 @@ def get_driver():
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
-    
-    # 隨機視窗大小與 UA 偽裝
-    chrome_options.add_argument(f"--window-size={random.randint(1200, 1920)},{random.randint(800, 1080)}")
+    chrome_options.add_argument(f"--window-size={random.randint(1200, 1600)},{random.randint(800, 1000)}")
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    chrome_options.add_experimental_option('useAutomationExtension', False)
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     
     ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
@@ -40,7 +37,7 @@ def get_driver():
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
     return driver
 
-def scrape_search_enhanced(url):
+def scrape_store_search(base_url):
     all_items = []
     log_placeholder = st.empty()
     logs = []
@@ -49,51 +46,71 @@ def scrape_search_enhanced(url):
         logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
         log_placeholder.code("\n".join(logs[-10:]))
 
+    # --- 關鍵：建構店家搜尋網址 ---
+    # 如果網址已經有參數，用 &p=，否則用 ?p=
+    search_query = "吹嘴"
+    if "?" in base_url:
+        target_url = f"{base_url.rstrip('/')}&p={search_query}"
+    else:
+        target_url = f"{base_url.rstrip('/')}/search/auction/product?p={search_query}"
+
     try:
         driver = get_driver()
-        log("🕵️ 調查員已就位，正在執行潛入行動...")
-        driver.execute_cdp_cmd('Network.setExtraHTTPHeaders', {'headers': {'Referer': 'https://www.google.com/'}})
-        driver.get(url)
+        log(f"🕵️ 進入店家網址並過濾「{search_query}」...")
+        driver.get(target_url)
+        time.sleep(random.uniform(5, 8))
         
-        # 模擬人類滾動
-        for i in range(3):
-            driver.execute_script(f"window.scrollBy(0, {random.randint(500, 800)});")
-            time.sleep(random.uniform(2, 3))
+        # 滾動加載
+        driver.execute_script("window.scrollTo(0, 1000);")
+        time.sleep(2)
 
-        log(f"📄 偵測標題: {driver.title}")
+        log(f"📄 店家頁面標題: {driver.title}")
         
-        # 暴力掃描所有商品塊
-        elements = driver.find_elements(By.XPATH, "//li | //div[contains(@class, 'item')]")
-        brand_list = ["Selmer", "Vandoren", "Yanagisawa", "Meyer", "Yamaha", "Otto Link", "Beechler"]
+        # 獲取商品元素 (Yahoo 店家頁面結構)
+        # 嘗試多種店家常用的商品容器
+        elements = driver.find_elements(By.CSS_SELECTOR, 'li[data-item-id], div[class*="BaseItem"], .item-container')
+        
+        brand_list = ["Selmer", "Vandoren", "Yanagisawa", "Meyer", "Yamaha", "Otto Link", "Beechler", "JodyJazz"]
         
         for el in elements:
             try:
-                txt = el.text.strip().replace("\n", " ")
-                if "$" in txt and len(txt) > 20:
-                    p_match = re.search(r'\$\s*[0-9,]+', txt)
-                    price = p_match.group() if p_match else "N/A"
-                    title = txt[:80].strip()
-                    
-                    brand = "其他"
-                    for b in brand_list:
-                        if b.lower() in title.lower():
-                            brand = b
-                            break
-                    
-                    instrument = "其他"
-                    if "alto" in title.lower() or "中音" in title.lower(): instrument = "中音Alto"
-                    elif "tenor" in title.lower() or "次中音" in title.lower(): instrument = "次中音Tenor"
+                # 抓取標題與價格
+                text = el.text.strip().replace("\n", " ")
+                if "$" not in text: continue
+                
+                # 抓取連結
+                link_el = el.find_element(By.TAG_NAME, "a")
+                link = link_el.get_attribute("href")
+                
+                # 價格正則
+                p_match = re.search(r'\$\s*[0-9,]+', text)
+                price = p_match.group() if p_match else "N/A"
+                
+                title = text[:80].strip()
+                
+                # 品牌識別
+                brand = "其他"
+                for b in brand_list:
+                    if b.lower() in title.lower():
+                        brand = b
+                        break
+                
+                # 樂器判定
+                instrument = "其他"
+                if "alto" in title.lower() or "中音" in title.lower(): instrument = "中音Alto"
+                elif "tenor" in title.lower() or "次中音" in title.lower(): instrument = "次中音Tenor"
 
-                    all_items.append({
-                        "品牌": brand,
-                        "商品標題": title,
-                        "適用樂器": instrument,
-                        "售價": price
-                    })
+                all_items.append({
+                    "品牌": brand,
+                    "商品資訊": title,
+                    "適用樂器": instrument,
+                    "售價": price,
+                    "網址": link
+                })
             except: continue
 
-        df = pd.DataFrame(all_items).drop_duplicates(subset=['商品標題', '售價'])
-        log(f"✅ 成功拔回 {len(df)} 筆數據")
+        df = pd.DataFrame(all_items).drop_duplicates(subset=['商品資訊', '售價'])
+        log(f"✅ 成功從店家拔回 {len(df)} 筆「吹嘴」相關數據")
         driver.quit()
         return df
     except Exception as e:
@@ -101,23 +118,24 @@ def scrape_search_enhanced(url):
         return pd.DataFrame()
 
 # --- 2. UI 介面 ---
-st.title("🎷 薩克斯風吹嘴市調工具")
+st.title("🎷 薩克斯風吹嘴：特定店家專向調查")
+st.markdown("輸入 **店家首頁網址**（例如：`https://tw.bid.yahoo.com/booth/Y12345678`），系統會自動搜尋店內的吹嘴。")
 
-# 設定預設網址
-default_url = "https://tw.bid.yahoo.com/search/auction/product?p=%E8%96%A9%E5%85%8B%E6%96%AF%E9%A2%A8%E5%90%B9%E5%98%B4"
-search_url = st.text_input("輸入 Yahoo 搜尋結果網址：", value=default_url)
+# 預設一個示例店家 (唐川音樂在 Yahoo 的範例路徑結構)
+default_store = "https://tw.bid.yahoo.com/booth/Y9133606367"
+store_url = st.text_input("店家網址：", value=default_store)
 
-if st.button("🚀 執行潛入調查"):
-    if search_url:
-        results = scrape_search_enhanced(search_url)
+if st.button("🚀 開始店內搜索"):
+    if store_url:
+        results = scrape_store_search(store_url)
         if not results.empty:
-            st.session_state.final_df = results
+            st.session_state.store_df = results
             st.dataframe(results, use_container_width=True)
         else:
-            st.error("調查結果為 0。這代表雲端 IP 目前仍被封鎖中，請過段時間再試。")
+            st.warning("在此店家內找不到相關商品，或 IP 遭暫時阻擋。")
 
-if 'final_df' in st.session_state:
+if 'store_df' in st.session_state:
     output = BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        st.session_state.final_df.to_excel(writer, index=False)
-    st.download_button("📥 下載 Excel 調查報告", output.getvalue(), "sax_report.xlsx")
+        st.session_state.store_df.to_excel(writer, index=False)
+    st.download_button("📥 下載店家調查 Excel", output.getvalue(), "store_sax_report.xlsx")
