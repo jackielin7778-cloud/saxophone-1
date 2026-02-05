@@ -1,4 +1,2 @@
-streamlit
-pandas
-selenium
-xlsxwriter
+chromium
+chromium-driver
